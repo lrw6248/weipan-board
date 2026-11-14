@@ -2,5 +2,6 @@
   "serverchan_sendkey": "",
   "feishu_webhook": "",
   "feishu_secret": "",
+  "site_url": "",
   "email": {}
 }

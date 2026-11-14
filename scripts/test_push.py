@@ -29,6 +29,10 @@ def main():
     args = ap.parse_args()
 
     payload = json.loads((ROOT / "data" / "data.json").read_text(encoding="utf-8"))
+    # 结论按当前数值现算，不用 data.json 里可能过期的 verdict 字段——
+    # 否则预览出来的文案和正式推送对不上。
+    lights, n, verdict = U.judge(payload["micro_pb"], payload["signal"], payload["diffusion"])
+    payload.update(lights=lights, light_count=n, verdict=verdict)
     cfg_path = ROOT / "config.json"
     cfg = json.loads(cfg_path.read_text(encoding="utf-8")) if cfg_path.exists() else {}
 
@@ -42,13 +46,15 @@ def main():
 
     print("数据日期：", payload["date"], "｜ 灯数：", payload["light_count"], "/3")
     print("已配置渠道：", "、".join(ch) if ch else "（无）")
-    if not ch:
-        print("\nconfig.json 里 feishu_webhook / serverchan_sendkey 都是空的，先把地址填上。")
+    if args.dry_run:                      # 预览不需要配渠道，看文案就够了
+        print("\n--- 正文预览（Server酱 / 邮件 用这个）---")
+        print(U.push_body(payload, md=False, cfg=cfg))
+        print("\n--- 飞书卡片 JSON（不会发送）---")
+        print(json.dumps(U.feishu_card(payload, cfg=cfg), ensure_ascii=False, indent=2))
         return
 
-    if args.dry_run:
-        print("\n--- 飞书卡片 JSON（不会发送）---")
-        print(json.dumps(U.feishu_card(payload), ensure_ascii=False, indent=2))
+    if not ch:
+        print("\nconfig.json 里 feishu_webhook / serverchan_sendkey 都是空的，先把地址填上。")
         return
 
     print("\n开始发送（忽略「状态没变不推」的规则，强制发一条）…")

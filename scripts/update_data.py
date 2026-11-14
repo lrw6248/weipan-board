@@ -20,6 +20,7 @@ import base64
 import hashlib
 import hmac
 import json
+import os
 import re
 import sys
 import time
@@ -381,11 +382,14 @@ def judge(micro_pb, signal, diffusion):
         "diffusion": diffusion < TH_DIFF,
     }
     n = sum(lights.values())
+    # 文案与页面结论卡（assets/js/app.js 的 evaluate()）逐字一致。
+    # 「暂不建仓 / 继续观察 / 重点跟踪 / 分批建仓」是定稿说法，别再写回「管住手」，
+    # 也不要写「历史上 0–1 星…」这类固定档位的断言——当前可能是 2 星，会自相矛盾。
     levels = {
-        3: ("抄底时刻", "三灯全亮：PB<2.0、做多信号≥3.0、扩散指数<20%，历史罕见，可考虑分批重仓", "danger"),
-        2: ("重点关注", "两盏灯亮，接近击球区。若 PB 与做多信号同时满足，性价比最高", "warn"),
-        1: ("保持观察", "仅一盏灯亮，信号不足，继续等待，管住手", "calm"),
-        0: ("管住手", "三灯全灭，估值不便宜。历史上 0–1 星区间后续 60 日超额收益为负", "mute"),
+        3: ("分批建仓", "三项全亮，历史罕见。宜分批买入，不是一次满仓。", "danger"),
+        2: ("重点跟踪", "已进入击球区，还差 1 项就齐了。", "warn"),
+        1: ("继续观察", "只亮 1 项，还构不成共振。", "calm"),
+        0: ("暂不建仓", "三项全亮才是「抄底时刻」，三项现在都没亮。", "mute"),
     }
     title, desc, tone = levels[n]
     return lights, n, {"title": title, "desc": desc, "tone": tone}
@@ -398,81 +402,113 @@ def _r(x, n):
     return float(Decimal(str(x)).quantize(Decimal(1).scaleb(-n), rounding=ROUND_HALF_UP))
 
 
-def push_body(payload, md=True):
-    """把「今天哪几个信号成立」拆开写清楚，而不是把四个参数并排堆在一行。
+WD = "一二三四五六日"
 
-    md=True 给 Server酱（微信）用，它按 markdown 渲染；
-    md=False 给邮件用，纯文本，避免把 ** 和 ### 原样发出去。
+
+def _site_url(cfg):
+    """看板地址：优先 config.site_url；Actions 里从 GITHUB_REPOSITORY 推出来。
+
+    推不出就返回空串——宁可少一行链接，也不要发一个打不开的地址。
     """
-    pb, sg, df = payload["micro_pb"], payload["signal"], payload["diffusion"]
-    L = payload["lights"]
-    b = (lambda s: f"**{s}**") if md else (lambda s: s)
-    pbv, sgv, dfv = _r(pb, 3), _r(sg, 1), _r(df, 1)   # 与页面显示精度对齐
-    items = [
-        ("微盘 PB", f"{pbv:.3f}", L["pb"],
-         f"需低于 {TH_PB:.1f}，当前高 {_r(pbv - TH_PB, 3):g}",
-         f"低于 {TH_PB:.1f}，成立"),
-        ("做多信号", f"{sgv:g} 星", L["signal"],
-         f"需 {TH_SIGNAL:g} 星以上，当前差 {_r(TH_SIGNAL - sgv, 1):g} 星",
-         f"达到 {TH_SIGNAL:g} 星，成立"),
-        ("扩散指数", f"{dfv:.1f}%", L["diffusion"],
-         f"需低于 {TH_DIFF:g}%，当前高 {_r(dfv - TH_DIFF, 1):g} 个百分点",
-         f"低于 {TH_DIFF:g}%，成立"),
-    ]
-    ok = [i for i in items if i[2]]
-    no = [i for i in items if not i[2]]
-    v = payload["verdict"]
-    d = payload["date"].replace("-", "/")
-    out = [f"### {d} · {len(ok)}/3 项成立" if md else f"{d} · {len(ok)}/3 项成立", ""]
-    out.append(f"{b(v['title'])}｜{v['desc']}")
-    out.append("")
-    out.append(f"{b('已满足')}（{len(ok)} 项）")
-    out += ([f"- {b(a + ' ' + x)}：{y}" if md else f"· {a} {x}：{y}" for a, x, _, _, y in ok]
-            or [("- 无" if md else "· 无")])
-    out.append("")
-    out.append(f"{b('未满足')}（{len(no)} 项）")
-    out += ([f"- {b(a + ' ' + x)}：{y}" if md else f"· {a} {x}：{y}" for a, x, _, y, _ in no]
-            or [("- 无" if md else "· 无")])
-    out.append("")
-    out.append(f"平均市值 {payload['avg_mv']:.2f} 亿（只描述结构，不参与判定）")
-    out.append("三项全亮才是「抄底时刻」。" if len(ok) < 3
-               else "三项全亮，这就是原作者定义的「抄底时刻」。")
-    return "\n".join(out)
+    u = (cfg.get("site_url") or "").strip() if cfg else ""
+    if u:
+        return u.rstrip("/") + "/"
+    repo = os.environ.get("GITHUB_REPOSITORY", "").strip()
+    if "/" in repo:
+        owner, name = repo.split("/", 1)
+        if name.lower() == f"{owner.lower()}.github.io":
+            return f"https://{owner}.github.io/"
+        return f"https://{owner}.github.io/{name}/"
+    return ""
 
 
-def feishu_card(payload):
-    """飞书消息卡片：顶部色条 + 三段文字，一眼看出「几项成立、差多少」。
+def _sig_rows(payload):
+    """三项信号的判定行：(名称, 成立文案, 是否成立, 未成立文案)。
 
-    只用两个最基础的组件（header.template 与 markdown），不依赖 hr / fields / note，
-    飞书卡片 1.0 与 2.0 客户端都能正常渲染。
+    数值只在这三段文字里兜住「差多少」，不再重复当前状态那一行的绝对值，
+    免得同一张卡片里 2.011 出现两遍。
     """
     pb, sg, df = payload["micro_pb"], payload["signal"], payload["diffusion"]
     L = payload["lights"]
     pbv, sgv, dfv = _r(pb, 3), _r(sg, 1), _r(df, 1)
-    rows = [
-        ("微盘 PB", f"{pbv:.3f}", L["pb"], f"需低于 {TH_PB:.1f}，当前高 {_r(pbv - TH_PB, 3):g}"),
-        ("做多信号", f"{sgv:g} 星", L["signal"],
-         f"需 {TH_SIGNAL:g} 星以上，当前差 {_r(TH_SIGNAL - sgv, 1):g} 星"),
-        ("扩散指数", f"{dfv:.1f}%", L["diffusion"],
-         f"需低于 {TH_DIFF:g}%，当前高 {_r(dfv - TH_DIFF, 1):g} 个百分点"),
+    return [
+        ("绝对估值", f"低于 {TH_PB:.1f}，已成立", L["pb"],
+         f"需低于 {TH_PB:.1f}，当前高出 {_r(pbv - TH_PB, 3):g}"),
+        ("相对估值", f"达到 {TH_SIGNAL:g} 星，已成立", L["signal"],
+         f"需 {TH_SIGNAL:g} 星以上，当前 {sgv:g} 星，差 {_r(TH_SIGNAL - sgv, 1):g} 星"),
+        ("市场情绪", f"低于 {TH_DIFF:g}%，已成立", L["diffusion"],
+         f"需低于 {TH_DIFF:g}%，当前高出 {_r(dfv - TH_DIFF, 1):g} 个百分点"),
     ]
-    ok = [r for r in rows if r[2]]
-    no = [r for r in rows if not r[2]]
-    n = len(ok)
+
+
+def push_body(payload, md=True, cfg=None):
+    """Server酱（md=True）/ 邮件（md=False）的正文。
+
+    结构固定为四段：日期星期 → 结论 → 当前状态 → 信号逐条。
+    结论用页面结论卡的原文（暂不建仓 / 继续观察 / 重点跟踪 / 分批建仓），
+    不要在这里另造说法。
+    """
+    P = (lambda s: f"**{s}**") if md else (lambda s: s)
+    H = (lambda s: f"### {s}") if md else (lambda s: s)
+    pb, sg, df = payload["micro_pb"], payload["signal"], payload["diffusion"]
     v = payload["verdict"]
-    d = payload["date"].replace("-", "/")
+    d = payload["date"]
+    wd = "周" + WD[datetime.strptime(d, "%Y-%m-%d").weekday()]
+    rows = _sig_rows(payload)
+    ok = [r for r in rows if r[2]]
+    n = len(ok)
+    mark = (lambda o: "✓" if o else "✗")
 
-    def block(title, group, done):
-        if not group:
-            return f"**{title}**\n无"
-        body = "\n".join(f"- **{a}** {x} ｜ " + ("已成立" if done else g)
-                         for a, x, _, g in group)
-        return f"**{title}**\n{body}"
+    out = [
+        H(f"{d.replace('-', '/')}（{wd}）· {n}/3 项成立"),
+        "",
+        f"{P(v['title'])} ｜ {v['desc']}",
+        "",
+        P("当前状态"),
+        f"微盘 PB {_r(pb, 3):.3f} ｜ 做多信号 {_r(sg, 1):g} 星 ｜ 扩散指数 {_r(df, 1):.1f}%",
+        f"平均市值 {payload['avg_mv']:.2f} 亿（只描述结构，不参与判定）",
+        "",
+        P(f"信号明细 · {n}/3 成立"),
+    ]
+    for a, yes, good, no in rows:
+        out.append(f"{mark(good)} {P(a)} ｜ {yes if good else no}")
+    url = _site_url(cfg)
+    if url:
+        out.append(f"看板 {url}")
+    return "\n".join(out)
 
-    head = f"**{d}** ｜ {v['title']}\n{v['desc']}"
-    foot = (f"平均市值 {payload['avg_mv']:.2f} 亿（只描述结构，不参与判定）\n"
-            + ("三项全亮才是「抄底时刻」。" if n < 3 else "三项全亮，这就是原作者定义的「抄底时刻」。"))
-    # 顶部颜色：全亮红（值得行动）、部分亮橙、全灭灰
+
+def feishu_card(payload, cfg=None):
+    """飞书消息卡片：顶部色条给「几项成立 + 结论」，正文三段。
+
+    只用 header.template 与 markdown 两个最基础组件，1.0 / 2.0 客户端都能渲染；
+    不要用 hr / fields / note，也别用 <font> 之外的 HTML，容易在旧客户端白屏。
+    """
+    pb, sg, df = payload["micro_pb"], payload["signal"], payload["diffusion"]
+    v = payload["verdict"]
+    d = payload["date"]
+    wd = "周" + WD[datetime.strptime(d, "%Y-%m-%d").weekday()]
+    rows = _sig_rows(payload)
+    n = sum(1 for r in rows if r[2])
+    detail = "\n".join(f"{'✓' if g else '✗'} **{a}** ｜ {y if g else no}"
+                       for a, y, g, no in rows)
+
+    parts = [
+        {"tag": "markdown",
+         "content": f"**{d.replace('-', '/')}（{wd}）**\n{v['desc']}"},
+        {"tag": "markdown",
+         "content": (f"**当前状态**\n"
+                     f"微盘 PB {_r(pb, 3):.3f} ｜ 做多信号 {_r(sg, 1):g} 星 ｜ 扩散指数 {_r(df, 1):.1f}%")},
+        {"tag": "markdown", "content": f"**信号明细 · {n}/3 成立**\n{detail}"},
+    ]
+    url = _site_url(cfg)
+    foot = f"平均市值 {payload['avg_mv']:.2f} 亿 · 不参与判定"
+    if url:
+        foot += f"　[查看看板]({url})"
+    parts.append({"tag": "markdown", "text_size": "notation",
+                  "content": f"<font color='grey'>{foot}</font>"})
+
+    # 色条：全亮红色（值得动手）、部分亮橙色、全灭灰色
     tpl = "red" if n >= 3 else ("orange" if n >= 1 else "grey")
     return {
         "msg_type": "interactive",
@@ -486,13 +522,7 @@ def feishu_card(payload):
             "body": {
                 "direction": "vertical",
                 "padding": "12px 12px 12px 12px",
-                "elements": [
-                    {"tag": "markdown", "content": head},
-                    {"tag": "markdown", "content": block(f"已满足（{len(ok)} 项）", ok, True)},
-                    {"tag": "markdown", "content": block(f"未满足（{len(no)} 项）", no, False)},
-                    {"tag": "markdown", "text_size": "notation",
-                     "content": f"<font color='grey'>{foot}</font>"},
-                ],
+                "elements": parts,
             },
         },
     }
@@ -536,14 +566,15 @@ def push_notify(payload, prev, cfg):
     if not changed and n < 3:
         return  # 状态没变化且未到三灯，不打扰
     d = payload["date"]
-    text_md = push_body(payload, md=True)      # Server酱 支持 markdown
-    text_tx = push_body(payload, md=False)     # 邮件只发纯文本，别露出 ** 和 ###
-    push_feishu(payload, cfg)                  # 飞书：卡片消息，独立于另外两个渠道
+    short = d[5:].replace("-", "/")            # 推送标题里带日期，否则分不清昨天今天
+    text_md = push_body(payload, md=True, cfg=cfg)    # Server酱 支持 markdown
+    text_tx = push_body(payload, md=False, cfg=cfg)   # 邮件只发纯文本，别露出 ** 和 ###
+    push_feishu(payload, cfg)                         # 飞书：卡片消息，独立于另外两个渠道
     sendkey = cfg.get("serverchan_sendkey", "").strip()
     if sendkey:
         try:
             url = f"https://sctapi.ftqq.com/{sendkey}.send"
-            r = requests.post(url, data={"title": f"微盘信号 {n}/3 · {payload['verdict']['title']}",
+            r = requests.post(url, data={"title": f"微盘信号 {n}/3 · {payload['verdict']['title']} · {short}",
                                          "desp": text_md}, timeout=15, headers=UA)
             log(f"微信推送：{r.status_code} {r.text[:80]}")
         except Exception as e:
