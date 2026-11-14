@@ -43,7 +43,10 @@ jobs:
 
       - name: 写入推送密钥（来自仓库 Secrets，不进入代码）
         run: |
-          printf '{"serverchan_sendkey":"%s","email":{}}\n' "${{ secrets.SERVERCHAN_SENDKEY }}" > config.json
+          printf '{"serverchan_sendkey":"%s","email":{},"feishu_webhook":"%s","feishu_secret":"%s"}\n' \
+            "${{ secrets.SERVERCHAN_SENDKEY }}" \
+            "${{ secrets.FEISHU_WEBHOOK }}" \
+            "${{ secrets.FEISHU_SECRET }}" > config.json
 
       - name: 增量补齐真实历史截面（东财免费，仅新增交易日）
         run: python scripts/backfill_real.py --workers 5

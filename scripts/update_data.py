@@ -16,6 +16,9 @@
 可选：配置 config.json 里的 sendkey / 邮箱，信号变化时推送到微信或邮件。
 """
 
+import base64
+import hashlib
+import hmac
 import json
 import re
 import sys
@@ -437,8 +440,94 @@ def push_body(payload, md=True):
     return "\n".join(out)
 
 
+def feishu_card(payload):
+    """飞书消息卡片：顶部色条 + 三段文字，一眼看出「几项成立、差多少」。
+
+    只用两个最基础的组件（header.template 与 markdown），不依赖 hr / fields / note，
+    飞书卡片 1.0 与 2.0 客户端都能正常渲染。
+    """
+    pb, sg, df = payload["micro_pb"], payload["signal"], payload["diffusion"]
+    L = payload["lights"]
+    pbv, sgv, dfv = _r(pb, 3), _r(sg, 1), _r(df, 1)
+    rows = [
+        ("微盘 PB", f"{pbv:.3f}", L["pb"], f"需低于 {TH_PB:.1f}，当前高 {_r(pbv - TH_PB, 3):g}"),
+        ("做多信号", f"{sgv:g} 星", L["signal"],
+         f"需 {TH_SIGNAL:g} 星以上，当前差 {_r(TH_SIGNAL - sgv, 1):g} 星"),
+        ("扩散指数", f"{dfv:.1f}%", L["diffusion"],
+         f"需低于 {TH_DIFF:g}%，当前高 {_r(dfv - TH_DIFF, 1):g} 个百分点"),
+    ]
+    ok = [r for r in rows if r[2]]
+    no = [r for r in rows if not r[2]]
+    n = len(ok)
+    v = payload["verdict"]
+    d = payload["date"].replace("-", "/")
+
+    def block(title, group, done):
+        if not group:
+            return f"**{title}**\n无"
+        body = "\n".join(f"- **{a}** {x} ｜ " + ("已成立" if done else g)
+                         for a, x, _, g in group)
+        return f"**{title}**\n{body}"
+
+    head = f"**{d}** ｜ {v['title']}\n{v['desc']}"
+    foot = (f"平均市值 {payload['avg_mv']:.2f} 亿（只描述结构，不参与判定）\n"
+            + ("三项全亮才是「抄底时刻」。" if n < 3 else "三项全亮，这就是原作者定义的「抄底时刻」。"))
+    # 顶部颜色：全亮红（值得行动）、部分亮橙、全灭灰
+    tpl = "red" if n >= 3 else ("orange" if n >= 1 else "grey")
+    return {
+        "msg_type": "interactive",
+        "card": {
+            "schema": "2.0",
+            "config": {"update_multi": True},
+            "header": {
+                "title": {"tag": "plain_text", "content": f"微盘信号 {n}/3 · {v['title']}"},
+                "template": tpl,
+            },
+            "body": {
+                "direction": "vertical",
+                "padding": "12px 12px 12px 12px",
+                "elements": [
+                    {"tag": "markdown", "content": head},
+                    {"tag": "markdown", "content": block(f"已满足（{len(ok)} 项）", ok, True)},
+                    {"tag": "markdown", "content": block(f"未满足（{len(no)} 项）", no, False)},
+                    {"tag": "markdown", "text_size": "notation",
+                     "content": f"<font color='grey'>{foot}</font>"},
+                ],
+            },
+        },
+    }
+
+
+def push_feishu(payload, cfg):
+    """飞书自定义机器人：webhook 必填，secret 可选（开了「签名校验」才需要）。"""
+    hook = (cfg.get("feishu_webhook") or "").strip()
+    if not hook:
+        return
+    body = feishu_card(payload)
+    secret = (cfg.get("feishu_secret") or "").strip()
+    if secret:                                    # 签名校验：timestamp + "\n" + 密钥 作 HMAC-SHA256 的 key
+        ts = str(int(time.time()))
+        digest = hmac.new(f"{ts}\n{secret}".encode("utf-8"), digestmod=hashlib.sha256).digest()
+        body["timestamp"] = ts
+        body["sign"] = base64.b64encode(digest).decode("utf-8")
+    try:
+        r = requests.post(hook, json=body, timeout=15, headers=UA)
+        j = {}
+        try:
+            j = r.json()
+        except Exception:
+            pass
+        ok = j.get("code") == 0 or j.get("StatusCode") == 0
+        if ok:
+            log("飞书推送成功")
+        else:
+            log(f"飞书推送失败：{r.status_code} {json.dumps(j, ensure_ascii=False)[:160]}")
+    except Exception as e:
+        log(f"飞书推送异常：{type(e).__name__}: {e}")
+
+
 def push_notify(payload, prev, cfg):
-    """可选的免费提醒：Server酱（微信） / SMTP 邮件。"""
+    """可选的免费提醒：飞书（卡片） / Server酱（微信） / SMTP 邮件。"""
     if not cfg:
         return
     cur = payload["lights"]
@@ -449,6 +538,7 @@ def push_notify(payload, prev, cfg):
     d = payload["date"]
     text_md = push_body(payload, md=True)      # Server酱 支持 markdown
     text_tx = push_body(payload, md=False)     # 邮件只发纯文本，别露出 ** 和 ###
+    push_feishu(payload, cfg)                  # 飞书：卡片消息，独立于另外两个渠道
     sendkey = cfg.get("serverchan_sendkey", "").strip()
     if sendkey:
         try:
