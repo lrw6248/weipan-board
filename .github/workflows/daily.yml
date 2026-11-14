@@ -1,0 +1,86 @@
+name: 每日微盘信号更新
+
+on:
+  schedule:
+    # UTC 08:00 = 北京时间 16:00，周一至周五（交易日）；节假日跑也不会产生错误数据
+    - cron: '0 8 * * 1-5'
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+# 定时与手动同时触发时排队，避免两次更新互相覆盖
+concurrency:
+  group: "data-update"
+  cancel-in-progress: false
+
+jobs:
+  update:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - name: 拉取仓库
+        uses: actions/checkout@v4
+
+      - name: 准备 Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: 安装免费依赖
+        run: |
+          python -m pip install --upgrade pip -q
+          pip install requests -q
+
+      - name: 复用回测截面缓存（首次约 2-3 分钟，之后只补新增交易日）
+        uses: actions/cache@v4
+        with:
+          path: data/.bt_cache
+          key: bt-cache-${{ github.run_id }}
+          restore-keys: |
+            bt-cache-
+
+      - name: 写入推送密钥（来自仓库 Secrets，不进入代码）
+        run: |
+          printf '{"serverchan_sendkey":"%s","email":{}}\n' "${{ secrets.SERVERCHAN_SENDKEY }}" > config.json
+
+      - name: 增量补齐真实历史截面（东财免费，仅新增交易日）
+        run: python scripts/backfill_real.py --workers 5
+
+      - name: 首次补齐扩散指数、市值中位数与成交额历史（仅缺文件时）
+        continue-on-error: true
+        run: |
+          if [ ! -f data/extra_hist.json ]; then
+            python scripts/backfill_extra.py
+            python scripts/backfill_amount.py
+          fi
+
+      - name: 计算当日四个信号指标（信号变化自动推微信）
+        run: python scripts/update_data.py
+
+      - name: 刷新星级有效性回测（附加看板，失败不影响主看板）
+        continue-on-error: true
+        run: python scripts/backtest_real.py --workers 5
+
+      - name: 把样式、脚本、数据内联进 index.html（页面必须自包含，否则单独打开会丢样式）
+        run: |
+          python scripts/build_page.py
+          python scripts/build_page.py --check
+
+      - name: 提交数据回仓库（Pages 从 main 分支发布，push 后网页自动刷新）
+        run: |
+          git config user.name "signal-bot"
+          git config user.email "bot@users.noreply.github.com"
+          # index.html 是自包含产物（含当日数据），随数据一起提交，
+          # 保证从仓库直接下载的这一份也是最新的、能单独打开。
+          for f in index.html data/data.js data/data.json data/history.csv data/history_real.csv data/cons_cache.json \
+                   data/star_history.csv data/backtest.json data/bt_data.js data/extra_hist.json data/extra_hist.js \
+                   data/.trade_days.json data/.last_state.json; do
+            [ -f "$f" ] && git add "$f"
+          done
+          if git diff --staged --quiet; then
+            echo "数据无变化，跳过提交"
+          else
+            git commit -m "更新微盘信号 $(date +%F)"
+            git push
+          fi
