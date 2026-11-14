@@ -313,7 +313,7 @@ assets/css/style.css
 assets/js/app.js
 data/{data.js,data.json,bt_data.js,extra_hist.js,extra_hist.json,backtest.json,
       star_history.csv,history_real.csv,history.csv,cons_cache.json,.trade_days.json,.last_state.json}
-scripts/{update_data.py,backtest_real.py,backfill_real.py,backfill_extra.py,backfill_amount.py,build_page.py,backfill_akshare.py}
+scripts/{update_data.py,test_push.py,backtest_real.py,backfill_real.py,backfill_extra.py,backfill_amount.py,build_page.py,backfill_akshare.py}
 docs/{使用说明.md,AI_HANDOFF.md}
 .github/workflows/daily.yml
 ```
@@ -431,6 +431,10 @@ Pages 配置：`Settings → Pages → Source = Deploy from a branch`、`Branch 
 | 邮件 | 内联 | `email.{smtp,port,user,password,to}` | 纯文本 |
 
 **触发条件**（`push_notify` 开头）：`prev is None`，或任一灯状态发生变化，或 `light_count >= 3`。状态没变不推。
+
+**验证入口**：`scripts/test_push.py`（`--dry-run` 打印卡片 JSON 不发），以及 `.github/workflows/test-push.yml`
+（Actions 里手动触发，只发一条不更新数据）。它靠 `push_notify(payload, None, cfg)` 把 `prev` 置空来绕过「不变不推」。
+新增渠道时记得同时接进这个脚本，否则用户没法自测。
 
 **飞书卡片要点（改之前必读）**
 
