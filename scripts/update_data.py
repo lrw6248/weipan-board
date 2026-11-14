@@ -388,6 +388,55 @@ def judge(micro_pb, signal, diffusion):
     return lights, n, {"title": title, "desc": desc, "tone": tone}
 
 
+def _r(x, n):
+    """四舍五入到 n 位，用 HALF_UP——与页面 JS 的 toFixed 一致。
+    Python 内置 round 是银行家舍入（41.25 → 41.2），会和看板显示的 41.3 打架。"""
+    from decimal import Decimal, ROUND_HALF_UP
+    return float(Decimal(str(x)).quantize(Decimal(1).scaleb(-n), rounding=ROUND_HALF_UP))
+
+
+def push_body(payload, md=True):
+    """把「今天哪几个信号成立」拆开写清楚，而不是把四个参数并排堆在一行。
+
+    md=True 给 Server酱（微信）用，它按 markdown 渲染；
+    md=False 给邮件用，纯文本，避免把 ** 和 ### 原样发出去。
+    """
+    pb, sg, df = payload["micro_pb"], payload["signal"], payload["diffusion"]
+    L = payload["lights"]
+    b = (lambda s: f"**{s}**") if md else (lambda s: s)
+    pbv, sgv, dfv = _r(pb, 3), _r(sg, 1), _r(df, 1)   # 与页面显示精度对齐
+    items = [
+        ("微盘 PB", f"{pbv:.3f}", L["pb"],
+         f"需低于 {TH_PB:.1f}，当前高 {_r(pbv - TH_PB, 3):g}",
+         f"低于 {TH_PB:.1f}，成立"),
+        ("做多信号", f"{sgv:g} 星", L["signal"],
+         f"需 {TH_SIGNAL:g} 星以上，当前差 {_r(TH_SIGNAL - sgv, 1):g} 星",
+         f"达到 {TH_SIGNAL:g} 星，成立"),
+        ("扩散指数", f"{dfv:.1f}%", L["diffusion"],
+         f"需低于 {TH_DIFF:g}%，当前高 {_r(dfv - TH_DIFF, 1):g} 个百分点",
+         f"低于 {TH_DIFF:g}%，成立"),
+    ]
+    ok = [i for i in items if i[2]]
+    no = [i for i in items if not i[2]]
+    v = payload["verdict"]
+    d = payload["date"].replace("-", "/")
+    out = [f"### {d} · {len(ok)}/3 项成立" if md else f"{d} · {len(ok)}/3 项成立", ""]
+    out.append(f"{b(v['title'])}｜{v['desc']}")
+    out.append("")
+    out.append(f"{b('已满足')}（{len(ok)} 项）")
+    out += ([f"- {b(a + ' ' + x)}：{y}" if md else f"· {a} {x}：{y}" for a, x, _, _, y in ok]
+            or [("- 无" if md else "· 无")])
+    out.append("")
+    out.append(f"{b('未满足')}（{len(no)} 项）")
+    out += ([f"- {b(a + ' ' + x)}：{y}" if md else f"· {a} {x}：{y}" for a, x, _, y, _ in no]
+            or [("- 无" if md else "· 无")])
+    out.append("")
+    out.append(f"平均市值 {payload['avg_mv']:.2f} 亿（只描述结构，不参与判定）")
+    out.append("三项全亮才是「抄底时刻」。" if len(ok) < 3
+               else "三项全亮，这就是原作者定义的「抄底时刻」。")
+    return "\n".join(out)
+
+
 def push_notify(payload, prev, cfg):
     """可选的免费提醒：Server酱（微信） / SMTP 邮件。"""
     if not cfg:
@@ -398,17 +447,14 @@ def push_notify(payload, prev, cfg):
     if not changed and n < 3:
         return  # 状态没变化且未到三灯，不打扰
     d = payload["date"]
-    text = (f"{d} 微盘信号：{payload['verdict']['title']}（{n}/3 灯）\n"
-            f"微盘PB {payload['micro_pb']:.3f}（阈值<2.0）\n"
-            f"做多信号 {payload['signal']:.1f}（阈值≥3.0）\n"
-            f"扩散指数 {payload['diffusion']:.2f}%（阈值<20）\n"
-            f"平均市值 {payload['avg_mv']:.2f} 亿（不作为依据）")
+    text_md = push_body(payload, md=True)      # Server酱 支持 markdown
+    text_tx = push_body(payload, md=False)     # 邮件只发纯文本，别露出 ** 和 ###
     sendkey = cfg.get("serverchan_sendkey", "").strip()
     if sendkey:
         try:
             url = f"https://sctapi.ftqq.com/{sendkey}.send"
-            r = requests.post(url, data={"title": f"微盘信号 · {payload['verdict']['title']}", "desp": text},
-                              timeout=15, headers=UA)
+            r = requests.post(url, data={"title": f"微盘信号 {n}/3 · {payload['verdict']['title']}",
+                                         "desp": text_md}, timeout=15, headers=UA)
             log(f"微信推送：{r.status_code} {r.text[:80]}")
         except Exception as e:
             log(f"微信推送失败：{e}")
@@ -417,8 +463,8 @@ def push_notify(payload, prev, cfg):
         try:
             import smtplib
             from email.mime.text import MIMEText
-            msg = MIMEText(text, "plain", "utf-8")
-            msg["Subject"] = f"微盘信号 · {payload['verdict']['title']} · {d}"
+            msg = MIMEText(text_tx, "plain", "utf-8")
+            msg["Subject"] = f"微盘信号 {n}/3 · {payload['verdict']['title']} · {d}"
             msg["From"] = mail["user"]
             msg["To"] = mail["to"]
             s = smtplib.SMTP_SSL(mail["smtp"], int(mail.get("port", 465)), timeout=20)

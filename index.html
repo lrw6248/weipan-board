@@ -737,6 +737,15 @@ footer b{color:var(--txt2);font-weight:600}
   .tip .bub::after{left:auto;right:12px;margin-left:0}
 }
 
+/* ===== 桌面整体放大 =====
+   这套版式是按 1x 屏排的，辅助字号落在 7.4–9px（刻度、表头、口径说明），
+   在 24–27 英寸实机上确实看不清。整体放大 20%：比例、断行、图表都按原样缩放，
+   不需要逐条改字号，也不会像单纯调 font-size 那样把 nowrap 的标题行挤爆。
+   手机/平板（<900px）完全不受影响。 */
+@media(min-width:900px){
+  body{zoom:1.2;padding:20px 22px 0}
+}
+
 </style>
 <!--/INLINE:css-->
 </head>
@@ -754,7 +763,7 @@ footer b{color:var(--txt2);font-weight:600}
   <div class="hmeta">
     <span class="chip"><span class="dot"></span>数据日期 <b id="metaDate">—</b></span>
     <span class="chip" id="srcChip">来源 <b>自动复算</b></span>
-    <span class="chip" id="verChip" title="v26.2：样式/脚本/数据全部内联，单独打开也能完整显示。v26.3：档位表标注数据区间。v26.4：修深跌紫带被面板白底压住。v26.5：三张卡的灰字改为解释指标本身（绝对估值·市净率 / 相对估值·分档评分 / 市场情绪·均线占比），阈值与当前状态交给「当前状态」行和「高出阈值」标注，标题行不再混入判定语。">版本 <b>v26.5</b></span>
+    <span class="chip" id="verChip" title="v26.5：三张卡的灰字改为解释指标本身。v26.6：桌面端整体放大 20%（小字在实机上偏小）；页头不再与手机端字号一刀切。推送标题改为「N/3 项成立」，正文按已满足/未满足分组。">版本 <b>v26.6</b></span>
     <button class="btn primary" id="btnRefresh">↻ 刷新数据</button>
   </div>
 </header>

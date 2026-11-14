@@ -8,6 +8,7 @@ on:
 
 permissions:
   contents: write
+  pages: write
 
 # 定时与手动同时触发时排队，避免两次更新互相覆盖
 concurrency:
@@ -84,3 +85,13 @@ jobs:
             git commit -m "更新微盘信号 $(date +%F)"
             git push
           fi
+
+      - name: 请求 Pages 重新发布
+        # 用 GITHUB_TOKEN 推的提交，Pages 不一定自动重建；这里显式触发一次。
+        # Pages 还没开启时会返回 404，不影响上面的数据提交。
+        continue-on-error: true
+        run: |
+          curl -s -o /dev/null -w "pages build: %{http_code}\n" -X POST \
+            -H "Authorization: Bearer ${{ github.token }}" \
+            -H "Accept: application/vnd.github+json" \
+            "https://api.github.com/repos/${{ github.repository }}/pages/builds"

@@ -725,3 +725,12 @@ footer b{color:var(--txt2);font-weight:600}
   .tip .bub{width:196px;left:auto;right:-8px;transform:none}
   .tip .bub::after{left:auto;right:12px;margin-left:0}
 }
+
+/* ===== 桌面整体放大 =====
+   这套版式是按 1x 屏排的，辅助字号落在 7.4–9px（刻度、表头、口径说明），
+   在 24–27 英寸实机上确实看不清。整体放大 20%：比例、断行、图表都按原样缩放，
+   不需要逐条改字号，也不会像单纯调 font-size 那样把 nowrap 的标题行挤爆。
+   手机/平板（<900px）完全不受影响。 */
+@media(min-width:900px){
+  body{zoom:1.2;padding:20px 22px 0}
+}
