@@ -1,17 +1,17 @@
 {
   "date": "2026-11-16",
-  "updated_at": "2026-11-16 17:49",
+  "updated_at": "2026-11-17 01:42",
   "micro_pb": 1.9356,
   "signal": 2.0,
   "diffusion": 6.0,
   "avg_mv": 18.65,
   "median_mv": 18.86,
   "amount": 155.4,
-  "q25": 2.1085,
+  "q25": 2.1071,
   "q25_source": "东财真实历史截面 · 近 1800 个交易日",
   "market_source": "东方财富真实收盘截面",
   "history_source": "东方财富历史估值明细（每日真实截面重算最小400只）",
-  "history_days": 2150,
+  "history_days": 2151,
   "history_from": "2018-01-02",
   "history_to": "2026-11-16",
   "thresholds": {
@@ -31,7 +31,7 @@
   },
   "signal_detail": {
     "纵向(近1800日25%分位)": {
-      "value": 2.1085,
+      "value": 2.1071,
       "ok": true
     },
     "巨盘(1-300)": {
@@ -10826,6 +10826,11 @@
     {
       "date": "2026-11-12",
       "pb": 2.0108,
+      "source": "real"
+    },
+    {
+      "date": "2026-11-13",
+      "pb": 1.9692,
       "source": "real"
     },
     {
